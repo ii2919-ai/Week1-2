@@ -1,108 +1,138 @@
 import java.util.*;
+import java.util.concurrent.*;
 
-/**
- * Week1and2 simulates a Social Media Username Availability Checker.
- * It demonstrates O(1) username lookup, frequency counting, and
- * suggestions for alternative usernames if a requested one is taken.
- *
- * Author: Student
- * Version: 1.0
- */
 public class Week1and2 {
 
-    // Stores registered usernames for O(1) lookup
-    private HashMap<String, Integer> usernameMap;
+    // Entry class
+    static class DNSEntry {
+        String domain;
+        String ipAddress;
+        long timestamp;
+        long expiryTime;
 
-    // Tracks frequency of attempted username checks
-    private HashMap<String, Integer> attemptFrequency;
-
-    // Simulated userId counter
-    private int userIdCounter;
-
-    public Week1and2() {
-        usernameMap = new HashMap<>();
-        attemptFrequency = new HashMap<>();
-        userIdCounter = 1;
-
-        // Pre-populate with some usernames
-        registerUsername("john_doe");
-        registerUsername("admin");
-        registerUsername("user123");
-    }
-
-    /**
-     * Check if username is available.
-     * @param username username to check
-     * @return true if available, false if taken
-     */
-    public boolean checkAvailability(String username) {
-        attemptFrequency.put(username, attemptFrequency.getOrDefault(username, 0) + 1);
-        return !usernameMap.containsKey(username);
-    }
-
-    /**
-     * Register a new username if available.
-     */
-    public boolean registerUsername(String username) {
-        if (checkAvailability(username)) {
-            usernameMap.put(username, userIdCounter++);
-            return true;
+        public DNSEntry(String domain, String ipAddress, long ttlMillis) {
+            this.domain = domain;
+            this.ipAddress = ipAddress;
+            this.timestamp = System.currentTimeMillis();
+            this.expiryTime = this.timestamp + ttlMillis;
         }
-        return false;
+
+        public boolean isExpired() {
+            return System.currentTimeMillis() > expiryTime;
+        }
     }
 
-    /**
-     * Suggest alternative usernames if taken.
-     */
-    public List<String> suggestAlternatives(String username) {
-        List<String> suggestions = new ArrayList<>();
-        int suffix = 1;
+    private final int capacity;
+    private final Map<String, DNSEntry> cache;
 
-        while (suggestions.size() < 3) {
-            String alternative = username + suffix;
-            if (checkAvailability(alternative)) {
-                suggestions.add(alternative);
+    // Stats
+    private long hits = 0;
+    private long misses = 0;
+    private long totalLookupTime = 0;
+    private long requestCount = 0;
+
+    // Constructor
+    public Week1and2(int capacity) {
+        this.capacity = capacity;
+
+        this.cache = new LinkedHashMap<String, DNSEntry>(capacity, 0.75f, true) {
+            protected boolean removeEldestEntry(Map.Entry<String, DNSEntry> eldest) {
+                return size() > Week1and2.this.capacity;
             }
-            suffix++;
-        }
+        };
 
-        // Optional: add a dot-separated version
-        if (username.contains("_")) {
-            String dotVersion = username.replace("_", ".");
-            if (checkAvailability(dotVersion)) {
-                suggestions.add(dotVersion);
-            }
-        }
-
-        return suggestions;
+        startCleanupThread();
     }
 
-    /**
-     * Get the username attempted most frequently.
-     */
-    public String getMostAttempted() {
-        String mostAttempted = null;
-        int maxCount = 0;
-        for (Map.Entry<String, Integer> entry : attemptFrequency.entrySet()) {
-            if (entry.getValue() > maxCount) {
-                mostAttempted = entry.getKey();
-                maxCount = entry.getValue();
-            }
+    // Resolve method
+    public synchronized String resolve(String domain, long ttlSeconds) {
+        long startTime = System.nanoTime();
+
+        DNSEntry entry = cache.get(domain);
+
+        if (entry != null && !entry.isExpired()) {
+            hits++;
+            recordTime(startTime);
+            System.out.println("Cache HIT: " + domain);
+            return entry.ipAddress;
         }
-        return mostAttempted + " (" + maxCount + " attempts)";
+
+        if (entry != null && entry.isExpired()) {
+            cache.remove(domain);
+            System.out.println("Cache EXPIRED: " + domain);
+        }
+
+        // Cache miss
+        misses++;
+        System.out.println("Cache MISS: " + domain);
+
+        String ip = queryUpstreamDNS(domain);
+
+        DNSEntry newEntry = new DNSEntry(domain, ip, ttlSeconds * 1000);
+        cache.put(domain, newEntry);
+
+        recordTime(startTime);
+        return ip;
     }
 
-    // Sample driver method
-    public static void main(String[] args) {
-        Week1and2 checker = new Week1and2();
+    // Simulated upstream DNS query
+    private String queryUpstreamDNS(String domain) {
+        try {
+            Thread.sleep(100); // simulate latency
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
 
-        System.out.println("Check 'john_doe': " + checker.checkAvailability("john_doe")); // false
-        System.out.println("Check 'jane_smith': " + checker.checkAvailability("jane_smith")); // true
+        return "172.217." + (int)(Math.random() * 255) + "." + (int)(Math.random() * 255);
+    }
 
-        System.out.println("Register 'jane_smith': " + checker.registerUsername("jane_smith")); // true
-        System.out.println("Register 'john_doe': " + checker.registerUsername("john_doe")); // false
+    // Cleanup thread
+    private void startCleanupThread() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
 
-        System.out.println("Suggestions for 'john_doe': " + checker.suggestAlternatives("john_doe"));
-        System.out.println("Most attempted username: " + checker.getMostAttempted());
+        scheduler.scheduleAtFixedRate(() -> {
+            synchronized (Week1and2.this) {
+                Iterator<Map.Entry<String, DNSEntry>> it = cache.entrySet().iterator();
+
+                while (it.hasNext()) {
+                    Map.Entry<String, DNSEntry> entry = it.next();
+                    if (entry.getValue().isExpired()) {
+                        it.remove();
+                    }
+                }
+            }
+        }, 5, 5, TimeUnit.SECONDS);
+    }
+
+    // Stats tracking
+    private void recordTime(long startTime) {
+        long elapsed = System.nanoTime() - startTime;
+        totalLookupTime += elapsed;
+        requestCount++;
+    }
+
+    public synchronized void getCacheStats() {
+        double hitRate = requestCount == 0 ? 0 : (hits * 100.0 / requestCount);
+        double avgTimeMs = requestCount == 0 ? 0 : (totalLookupTime / 1_000_000.0 / requestCount);
+
+        System.out.println("\nCache Stats:");
+        System.out.println("Hits: " + hits);
+        System.out.println("Misses: " + misses);
+        System.out.println("Hit Rate: " + String.format("%.2f", hitRate) + "%");
+        System.out.println("Avg Lookup Time: " + String.format("%.2f", avgTimeMs) + " ms");
+    }
+
+    // Main method
+    public static void main(String[] args) throws InterruptedException {
+        Week1and2 dnsCache = new Week1and2(3);
+
+        System.out.println(dnsCache.resolve("google.com", 3));
+        System.out.println(dnsCache.resolve("google.com", 3));
+
+        Thread.sleep(4000); // wait for TTL expiry
+
+        System.out.println(dnsCache.resolve("google.com", 3));
+
+        dnsCache.getCacheStats();
     }
 }
