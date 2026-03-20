@@ -1,138 +1,109 @@
-import java.util.*;
 import java.util.concurrent.*;
+import java.util.*;
 
 public class Week1and2 {
 
-    // Entry class
-    static class DNSEntry {
-        String domain;
-        String ipAddress;
-        long timestamp;
-        long expiryTime;
+    // Token Bucket class
+    static class TokenBucket {
+        private final int maxTokens;
+        private final double refillRatePerMillis;
+        private double tokens;
+        private long lastRefillTime;
 
-        public DNSEntry(String domain, String ipAddress, long ttlMillis) {
-            this.domain = domain;
-            this.ipAddress = ipAddress;
-            this.timestamp = System.currentTimeMillis();
-            this.expiryTime = this.timestamp + ttlMillis;
+        public TokenBucket(int maxTokens, long refillDurationMillis) {
+            this.maxTokens = maxTokens;
+            this.tokens = maxTokens;
+            this.refillRatePerMillis = (double) maxTokens / refillDurationMillis;
+            this.lastRefillTime = System.currentTimeMillis();
         }
 
-        public boolean isExpired() {
-            return System.currentTimeMillis() > expiryTime;
+        // Refill tokens based on time elapsed
+        private synchronized void refill() {
+            long now = System.currentTimeMillis();
+            long elapsed = now - lastRefillTime;
+
+            double tokensToAdd = elapsed * refillRatePerMillis;
+            tokens = Math.min(maxTokens, tokens + tokensToAdd);
+
+            lastRefillTime = now;
         }
-    }
 
-    private final int capacity;
-    private final Map<String, DNSEntry> cache;
+        // Try consuming 1 token
+        public synchronized boolean allowRequest() {
+            refill();
 
-    // Stats
-    private long hits = 0;
-    private long misses = 0;
-    private long totalLookupTime = 0;
-    private long requestCount = 0;
-
-    // Constructor
-    public Week1and2(int capacity) {
-        this.capacity = capacity;
-
-        this.cache = new LinkedHashMap<String, DNSEntry>(capacity, 0.75f, true) {
-            protected boolean removeEldestEntry(Map.Entry<String, DNSEntry> eldest) {
-                return size() > Week1and2.this.capacity;
+            if (tokens >= 1) {
+                tokens -= 1;
+                return true;
             }
-        };
-
-        startCleanupThread();
-    }
-
-    // Resolve method
-    public synchronized String resolve(String domain, long ttlSeconds) {
-        long startTime = System.nanoTime();
-
-        DNSEntry entry = cache.get(domain);
-
-        if (entry != null && !entry.isExpired()) {
-            hits++;
-            recordTime(startTime);
-            System.out.println("Cache HIT: " + domain);
-            return entry.ipAddress;
+            return false;
         }
 
-        if (entry != null && entry.isExpired()) {
-            cache.remove(domain);
-            System.out.println("Cache EXPIRED: " + domain);
+        public synchronized int getRemainingTokens() {
+            refill();
+            return (int) tokens;
         }
 
-        // Cache miss
-        misses++;
-        System.out.println("Cache MISS: " + domain);
+        public synchronized long getRetryAfterSeconds() {
+            if (tokens >= 1) return 0;
 
-        String ip = queryUpstreamDNS(domain);
-
-        DNSEntry newEntry = new DNSEntry(domain, ip, ttlSeconds * 1000);
-        cache.put(domain, newEntry);
-
-        recordTime(startTime);
-        return ip;
-    }
-
-    // Simulated upstream DNS query
-    private String queryUpstreamDNS(String domain) {
-        try {
-            Thread.sleep(100); // simulate latency
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+            double missingTokens = 1 - tokens;
+            return (long) (missingTokens / refillRatePerMillis / 1000);
         }
-
-        return "172.217." + (int)(Math.random() * 255) + "." + (int)(Math.random() * 255);
     }
 
-    // Cleanup thread
-    private void startCleanupThread() {
-        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    // Rate limiter store
+    private final ConcurrentHashMap<String, TokenBucket> clientBuckets = new ConcurrentHashMap<>();
 
-        scheduler.scheduleAtFixedRate(() -> {
-            synchronized (Week1and2.this) {
-                Iterator<Map.Entry<String, DNSEntry>> it = cache.entrySet().iterator();
+    private final int MAX_REQUESTS = 1000;
+    private final long WINDOW_MILLIS = 60 * 60 * 1000; // 1 hour
 
-                while (it.hasNext()) {
-                    Map.Entry<String, DNSEntry> entry = it.next();
-                    if (entry.getValue().isExpired()) {
-                        it.remove();
-                    }
-                }
-            }
-        }, 5, 5, TimeUnit.SECONDS);
+    // Get or create bucket
+    private TokenBucket getBucket(String clientId) {
+        return clientBuckets.computeIfAbsent(clientId,
+                k -> new TokenBucket(MAX_REQUESTS, WINDOW_MILLIS));
     }
 
-    // Stats tracking
-    private void recordTime(long startTime) {
-        long elapsed = System.nanoTime() - startTime;
-        totalLookupTime += elapsed;
-        requestCount++;
+    // Rate limit check
+    public void checkRateLimit(String clientId) {
+        TokenBucket bucket = getBucket(clientId);
+
+        if (bucket.allowRequest()) {
+            System.out.println("Allowed (" + bucket.getRemainingTokens() + " requests remaining)");
+        } else {
+            long retry = bucket.getRetryAfterSeconds();
+            System.out.println("Denied (0 requests remaining, retry after " + retry + "s)");
+        }
     }
 
-    public synchronized void getCacheStats() {
-        double hitRate = requestCount == 0 ? 0 : (hits * 100.0 / requestCount);
-        double avgTimeMs = requestCount == 0 ? 0 : (totalLookupTime / 1_000_000.0 / requestCount);
+    // Status API
+    public void getRateLimitStatus(String clientId) {
+        TokenBucket bucket = getBucket(clientId);
 
-        System.out.println("\nCache Stats:");
-        System.out.println("Hits: " + hits);
-        System.out.println("Misses: " + misses);
-        System.out.println("Hit Rate: " + String.format("%.2f", hitRate) + "%");
-        System.out.println("Avg Lookup Time: " + String.format("%.2f", avgTimeMs) + " ms");
+        int remaining = bucket.getRemainingTokens();
+        int used = MAX_REQUESTS - remaining;
+
+        long resetTime = System.currentTimeMillis() + WINDOW_MILLIS;
+
+        System.out.println("Status for " + clientId + ":");
+        System.out.println("{used: " + used +
+                ", limit: " + MAX_REQUESTS +
+                ", remaining: " + remaining +
+                ", reset: " + (resetTime / 1000) + "}");
     }
 
     // Main method
     public static void main(String[] args) throws InterruptedException {
-        Week1and2 dnsCache = new Week1and2(3);
+        Week1and2 rateLimiter = new Week1and2();
 
-        System.out.println(dnsCache.resolve("google.com", 3));
-        System.out.println(dnsCache.resolve("google.com", 3));
+        String clientId = "abc123";
 
-        Thread.sleep(4000); // wait for TTL expiry
+        // Simulate requests
+        for (int i = 0; i < 1005; i++) {
+            rateLimiter.checkRateLimit(clientId);
+        }
 
-        System.out.println(dnsCache.resolve("google.com", 3));
-
-        dnsCache.getCacheStats();
+        // Check status
+        rateLimiter.getRateLimitStatus(clientId);
     }
 }
