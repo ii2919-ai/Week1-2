@@ -1,138 +1,144 @@
 import java.util.*;
-import java.util.concurrent.*;
 
 public class Week1and2 {
 
-    // Entry class
-    static class DNSEntry {
-        String domain;
-        String ipAddress;
-        long timestamp;
-        long expiryTime;
+    // Spot status
+    enum Status {
+        EMPTY, OCCUPIED, DELETED
+    }
 
-        public DNSEntry(String domain, String ipAddress, long ttlMillis) {
-            this.domain = domain;
-            this.ipAddress = ipAddress;
-            this.timestamp = System.currentTimeMillis();
-            this.expiryTime = this.timestamp + ttlMillis;
-        }
+    // Parking Spot class
+    static class ParkingSpot {
+        String licensePlate;
+        long entryTime;
+        Status status;
 
-        public boolean isExpired() {
-            return System.currentTimeMillis() > expiryTime;
+        public ParkingSpot() {
+            this.status = Status.EMPTY;
         }
     }
 
-    private final int capacity;
-    private final Map<String, DNSEntry> cache;
+    private ParkingSpot[] table;
+    private int capacity;
+    private int size = 0;
 
     // Stats
-    private long hits = 0;
-    private long misses = 0;
-    private long totalLookupTime = 0;
-    private long requestCount = 0;
+    private int totalProbes = 0;
+    private int totalRequests = 0;
+    private Map<Integer, Integer> hourlyTraffic = new HashMap<>();
 
-    // Constructor
     public Week1and2(int capacity) {
         this.capacity = capacity;
+        table = new ParkingSpot[capacity];
+        for (int i = 0; i < capacity; i++) {
+            table[i] = new ParkingSpot();
+        }
+    }
 
-        this.cache = new LinkedHashMap<String, DNSEntry>(capacity, 0.75f, true) {
-            protected boolean removeEldestEntry(Map.Entry<String, DNSEntry> eldest) {
-                return size() > Week1and2.this.capacity;
+    // Hash function
+    private int hash(String licensePlate) {
+        return Math.abs(licensePlate.hashCode()) % capacity;
+    }
+
+    // Park vehicle
+    public void parkVehicle(String licensePlate) {
+        int index = hash(licensePlate);
+        int probes = 0;
+
+        totalRequests++;
+
+        while (table[index].status == Status.OCCUPIED) {
+            index = (index + 1) % capacity;
+            probes++;
+        }
+
+        totalProbes += probes;
+
+        table[index].licensePlate = licensePlate;
+        table[index].entryTime = System.currentTimeMillis();
+        table[index].status = Status.OCCUPIED;
+
+        size++;
+
+        int hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
+        hourlyTraffic.put(hour, hourlyTraffic.getOrDefault(hour, 0) + 1);
+
+        System.out.println("Parked " + licensePlate +
+                " → Spot #" + index + " (" + probes + " probes)");
+    }
+
+    // Exit vehicle
+    public void exitVehicle(String licensePlate) {
+        int index = hash(licensePlate);
+        int probes = 0;
+
+        while (table[index].status != Status.EMPTY) {
+            if (table[index].status == Status.OCCUPIED &&
+                    table[index].licensePlate.equals(licensePlate)) {
+
+                long durationMillis = System.currentTimeMillis() - table[index].entryTime;
+                double hours = durationMillis / (1000.0 * 60 * 60);
+
+                double fee = hours * 5; // $5 per hour
+
+                table[index].status = Status.DELETED;
+                size--;
+
+                System.out.printf("Exit %s → Spot #%d freed, Duration: %.2f hrs, Fee: $%.2f\n",
+                        licensePlate, index, hours, fee);
+                return;
             }
-        };
 
-        startCleanupThread();
-    }
-
-    // Resolve method
-    public synchronized String resolve(String domain, long ttlSeconds) {
-        long startTime = System.nanoTime();
-
-        DNSEntry entry = cache.get(domain);
-
-        if (entry != null && !entry.isExpired()) {
-            hits++;
-            recordTime(startTime);
-            System.out.println("Cache HIT: " + domain);
-            return entry.ipAddress;
+            index = (index + 1) % capacity;
+            probes++;
         }
 
-        if (entry != null && entry.isExpired()) {
-            cache.remove(domain);
-            System.out.println("Cache EXPIRED: " + domain);
-        }
-
-        // Cache miss
-        misses++;
-        System.out.println("Cache MISS: " + domain);
-
-        String ip = queryUpstreamDNS(domain);
-
-        DNSEntry newEntry = new DNSEntry(domain, ip, ttlSeconds * 1000);
-        cache.put(domain, newEntry);
-
-        recordTime(startTime);
-        return ip;
+        System.out.println("Vehicle not found: " + licensePlate);
     }
 
-    // Simulated upstream DNS query
-    private String queryUpstreamDNS(String domain) {
-        try {
-            Thread.sleep(100); // simulate latency
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-
-        return "172.217." + (int)(Math.random() * 255) + "." + (int)(Math.random() * 255);
-    }
-
-    // Cleanup thread
-    private void startCleanupThread() {
-        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
-
-        scheduler.scheduleAtFixedRate(() -> {
-            synchronized (Week1and2.this) {
-                Iterator<Map.Entry<String, DNSEntry>> it = cache.entrySet().iterator();
-
-                while (it.hasNext()) {
-                    Map.Entry<String, DNSEntry> entry = it.next();
-                    if (entry.getValue().isExpired()) {
-                        it.remove();
-                    }
-                }
+    // Find nearest available spot (from entrance = index 0)
+    public int findNearestSpot() {
+        for (int i = 0; i < capacity; i++) {
+            if (table[i].status != Status.OCCUPIED) {
+                return i;
             }
-        }, 5, 5, TimeUnit.SECONDS);
+        }
+        return -1;
     }
 
-    // Stats tracking
-    private void recordTime(long startTime) {
-        long elapsed = System.nanoTime() - startTime;
-        totalLookupTime += elapsed;
-        requestCount++;
-    }
+    // Statistics
+    public void getStatistics() {
+        double occupancy = (size * 100.0) / capacity;
+        double avgProbes = totalRequests == 0 ? 0 : (totalProbes * 1.0 / totalRequests);
 
-    public synchronized void getCacheStats() {
-        double hitRate = requestCount == 0 ? 0 : (hits * 100.0 / requestCount);
-        double avgTimeMs = requestCount == 0 ? 0 : (totalLookupTime / 1_000_000.0 / requestCount);
+        int peakHour = -1, max = 0;
+        for (Map.Entry<Integer, Integer> entry : hourlyTraffic.entrySet()) {
+            if (entry.getValue() > max) {
+                max = entry.getValue();
+                peakHour = entry.getKey();
+            }
+        }
 
-        System.out.println("\nCache Stats:");
-        System.out.println("Hits: " + hits);
-        System.out.println("Misses: " + misses);
-        System.out.println("Hit Rate: " + String.format("%.2f", hitRate) + "%");
-        System.out.println("Avg Lookup Time: " + String.format("%.2f", avgTimeMs) + " ms");
+        System.out.println("\n=== Parking Statistics ===");
+        System.out.printf("Occupancy: %.2f%%\n", occupancy);
+        System.out.printf("Avg Probes: %.2f\n", avgProbes);
+        System.out.println("Peak Hour: " + peakHour + ":00 - " + (peakHour + 1) + ":00");
     }
 
     // Main method
     public static void main(String[] args) throws InterruptedException {
-        Week1and2 dnsCache = new Week1and2(3);
+        Week1and2 parking = new Week1and2(10);
 
-        System.out.println(dnsCache.resolve("google.com", 3));
-        System.out.println(dnsCache.resolve("google.com", 3));
+        parking.parkVehicle("ABC-1234");
+        parking.parkVehicle("ABC-1235");
+        parking.parkVehicle("XYZ-9999");
 
-        Thread.sleep(4000); // wait for TTL expiry
+        Thread.sleep(2000);
 
-        System.out.println(dnsCache.resolve("google.com", 3));
+        parking.exitVehicle("ABC-1234");
 
-        dnsCache.getCacheStats();
+        System.out.println("Nearest Available Spot: #" + parking.findNearestSpot());
+
+        parking.getStatistics();
     }
 }
