@@ -1,109 +1,117 @@
-import java.util.concurrent.*;
 import java.util.*;
 
 public class Week1and2 {
 
-    // Token Bucket class
-    static class TokenBucket {
-        private final int maxTokens;
-        private final double refillRatePerMillis;
-        private double tokens;
-        private long lastRefillTime;
+    // Trie Node
+    static class TrieNode {
+        Map<Character, TrieNode> children = new HashMap<>();
+        Map<String, Integer> frequencyMap = new HashMap<>(); // query → frequency
+    }
 
-        public TokenBucket(int maxTokens, long refillDurationMillis) {
-            this.maxTokens = maxTokens;
-            this.tokens = maxTokens;
-            this.refillRatePerMillis = (double) maxTokens / refillDurationMillis;
-            this.lastRefillTime = System.currentTimeMillis();
+    private TrieNode root = new TrieNode();
+
+    // Global frequency map
+    private Map<String, Integer> globalFrequency = new HashMap<>();
+
+    private static final int TOP_K = 10;
+
+    // Insert query into Trie
+    public void insert(String query) {
+        globalFrequency.put(query, globalFrequency.getOrDefault(query, 0) + 1);
+
+        TrieNode node = root;
+        for (char c : query.toCharArray()) {
+            node.children.putIfAbsent(c, new TrieNode());
+            node = node.children.get(c);
+
+            // Update frequency at each prefix node
+            node.frequencyMap.put(query, globalFrequency.get(query));
         }
+    }
 
-        // Refill tokens based on time elapsed
-        private synchronized void refill() {
-            long now = System.currentTimeMillis();
-            long elapsed = now - lastRefillTime;
+    // Get top K suggestions for prefix
+    public List<String> search(String prefix) {
+        TrieNode node = root;
 
-            double tokensToAdd = elapsed * refillRatePerMillis;
-            tokens = Math.min(maxTokens, tokens + tokensToAdd);
-
-            lastRefillTime = now;
-        }
-
-        // Try consuming 1 token
-        public synchronized boolean allowRequest() {
-            refill();
-
-            if (tokens >= 1) {
-                tokens -= 1;
-                return true;
+        for (char c : prefix.toCharArray()) {
+            if (!node.children.containsKey(c)) {
+                // Typo handling: fallback to shorter prefix
+                return fallbackSearch(prefix);
             }
-            return false;
+            node = node.children.get(c);
         }
 
-        public synchronized int getRemainingTokens() {
-            refill();
-            return (int) tokens;
-        }
-
-        public synchronized long getRetryAfterSeconds() {
-            if (tokens >= 1) return 0;
-
-            double missingTokens = 1 - tokens;
-            return (long) (missingTokens / refillRatePerMillis / 1000);
-        }
+        return getTopK(node.frequencyMap);
     }
 
-    // Rate limiter store
-    private final ConcurrentHashMap<String, TokenBucket> clientBuckets = new ConcurrentHashMap<>();
+    // Fallback for typo tolerance (remove last char)
+    private List<String> fallbackSearch(String prefix) {
+        if (prefix.length() <= 1) return new ArrayList<>();
 
-    private final int MAX_REQUESTS = 1000;
-    private final long WINDOW_MILLIS = 60 * 60 * 1000; // 1 hour
-
-    // Get or create bucket
-    private TokenBucket getBucket(String clientId) {
-        return clientBuckets.computeIfAbsent(clientId,
-                k -> new TokenBucket(MAX_REQUESTS, WINDOW_MILLIS));
+        return search(prefix.substring(0, prefix.length() - 1));
     }
 
-    // Rate limit check
-    public void checkRateLimit(String clientId) {
-        TokenBucket bucket = getBucket(clientId);
+    // Get top K using Min Heap
+    private List<String> getTopK(Map<String, Integer> freqMap) {
+        PriorityQueue<Map.Entry<String, Integer>> minHeap =
+                new PriorityQueue<>(Map.Entry.comparingByValue());
 
-        if (bucket.allowRequest()) {
-            System.out.println("Allowed (" + bucket.getRemainingTokens() + " requests remaining)");
-        } else {
-            long retry = bucket.getRetryAfterSeconds();
-            System.out.println("Denied (0 requests remaining, retry after " + retry + "s)");
+        for (Map.Entry<String, Integer> entry : freqMap.entrySet()) {
+            minHeap.offer(entry);
+            if (minHeap.size() > TOP_K) {
+                minHeap.poll();
+            }
         }
+
+        List<Map.Entry<String, Integer>> result = new ArrayList<>(minHeap);
+        result.sort((a, b) -> b.getValue() - a.getValue());
+
+        List<String> suggestions = new ArrayList<>();
+        for (Map.Entry<String, Integer> entry : result) {
+            suggestions.add(entry.getKey() + " (" + entry.getValue() + ")");
+        }
+
+        return suggestions;
     }
 
-    // Status API
-    public void getRateLimitStatus(String clientId) {
-        TokenBucket bucket = getBucket(clientId);
-
-        int remaining = bucket.getRemainingTokens();
-        int used = MAX_REQUESTS - remaining;
-
-        long resetTime = System.currentTimeMillis() + WINDOW_MILLIS;
-
-        System.out.println("Status for " + clientId + ":");
-        System.out.println("{used: " + used +
-                ", limit: " + MAX_REQUESTS +
-                ", remaining: " + remaining +
-                ", reset: " + (resetTime / 1000) + "}");
+    // Update frequency (new search)
+    public void updateFrequency(String query) {
+        insert(query);
     }
 
     // Main method
-    public static void main(String[] args) throws InterruptedException {
-        Week1and2 rateLimiter = new Week1and2();
+    public static void main(String[] args) {
 
-        String clientId = "abc123";
+        Week1and2 system = new Week1and2();
 
-        // Simulate requests
-        for (int i = 0; i < 1005; i++) {
-            rateLimiter.checkRateLimit(clientId);
+        // Insert sample queries
+        system.insert("java tutorial");
+        system.insert("javascript");
+        system.insert("java download");
+        system.insert("java tutorial");
+        system.insert("java tutorial");
+        system.insert("javascript");
+        system.insert("java 21 features");
+
+        // Search
+        System.out.println("Search results for 'jav':");
+        List<String> results = system.search("jav");
+
+        int rank = 1;
+        for (String res : results) {
+            System.out.println(rank++ + ". " + res);
         }
 
-        // Check status
-        rateLimiter.getRateLimitStatus(clientId);
+        // Update frequency
+        system.updateFrequency("java 21 features");
+        system.updateFrequency("java 21 features");
+
+        System.out.println("\nAfter updating frequency:");
+        results = system.search("jav");
+
+        rank = 1;
+        for (String res : results) {
+            System.out.println(rank++ + ". " + res);
+        }
     }
 }
