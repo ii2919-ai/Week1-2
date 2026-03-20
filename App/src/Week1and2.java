@@ -1,138 +1,117 @@
 import java.util.*;
-import java.util.concurrent.*;
 
 public class Week1and2 {
 
-    // Entry class
-    static class DNSEntry {
-        String domain;
-        String ipAddress;
-        long timestamp;
-        long expiryTime;
+    // Trie Node
+    static class TrieNode {
+        Map<Character, TrieNode> children = new HashMap<>();
+        Map<String, Integer> frequencyMap = new HashMap<>(); // query → frequency
+    }
 
-        public DNSEntry(String domain, String ipAddress, long ttlMillis) {
-            this.domain = domain;
-            this.ipAddress = ipAddress;
-            this.timestamp = System.currentTimeMillis();
-            this.expiryTime = this.timestamp + ttlMillis;
-        }
+    private TrieNode root = new TrieNode();
 
-        public boolean isExpired() {
-            return System.currentTimeMillis() > expiryTime;
+    // Global frequency map
+    private Map<String, Integer> globalFrequency = new HashMap<>();
+
+    private static final int TOP_K = 10;
+
+    // Insert query into Trie
+    public void insert(String query) {
+        globalFrequency.put(query, globalFrequency.getOrDefault(query, 0) + 1);
+
+        TrieNode node = root;
+        for (char c : query.toCharArray()) {
+            node.children.putIfAbsent(c, new TrieNode());
+            node = node.children.get(c);
+
+            // Update frequency at each prefix node
+            node.frequencyMap.put(query, globalFrequency.get(query));
         }
     }
 
-    private final int capacity;
-    private final Map<String, DNSEntry> cache;
+    // Get top K suggestions for prefix
+    public List<String> search(String prefix) {
+        TrieNode node = root;
 
-    // Stats
-    private long hits = 0;
-    private long misses = 0;
-    private long totalLookupTime = 0;
-    private long requestCount = 0;
-
-    // Constructor
-    public Week1and2(int capacity) {
-        this.capacity = capacity;
-
-        this.cache = new LinkedHashMap<String, DNSEntry>(capacity, 0.75f, true) {
-            protected boolean removeEldestEntry(Map.Entry<String, DNSEntry> eldest) {
-                return size() > Week1and2.this.capacity;
+        for (char c : prefix.toCharArray()) {
+            if (!node.children.containsKey(c)) {
+                // Typo handling: fallback to shorter prefix
+                return fallbackSearch(prefix);
             }
-        };
-
-        startCleanupThread();
-    }
-
-    // Resolve method
-    public synchronized String resolve(String domain, long ttlSeconds) {
-        long startTime = System.nanoTime();
-
-        DNSEntry entry = cache.get(domain);
-
-        if (entry != null && !entry.isExpired()) {
-            hits++;
-            recordTime(startTime);
-            System.out.println("Cache HIT: " + domain);
-            return entry.ipAddress;
+            node = node.children.get(c);
         }
 
-        if (entry != null && entry.isExpired()) {
-            cache.remove(domain);
-            System.out.println("Cache EXPIRED: " + domain);
-        }
-
-        // Cache miss
-        misses++;
-        System.out.println("Cache MISS: " + domain);
-
-        String ip = queryUpstreamDNS(domain);
-
-        DNSEntry newEntry = new DNSEntry(domain, ip, ttlSeconds * 1000);
-        cache.put(domain, newEntry);
-
-        recordTime(startTime);
-        return ip;
+        return getTopK(node.frequencyMap);
     }
 
-    // Simulated upstream DNS query
-    private String queryUpstreamDNS(String domain) {
-        try {
-            Thread.sleep(100); // simulate latency
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+    // Fallback for typo tolerance (remove last char)
+    private List<String> fallbackSearch(String prefix) {
+        if (prefix.length() <= 1) return new ArrayList<>();
 
-        return "172.217." + (int)(Math.random() * 255) + "." + (int)(Math.random() * 255);
+        return search(prefix.substring(0, prefix.length() - 1));
     }
 
-    // Cleanup thread
-    private void startCleanupThread() {
-        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    // Get top K using Min Heap
+    private List<String> getTopK(Map<String, Integer> freqMap) {
+        PriorityQueue<Map.Entry<String, Integer>> minHeap =
+                new PriorityQueue<>(Map.Entry.comparingByValue());
 
-        scheduler.scheduleAtFixedRate(() -> {
-            synchronized (Week1and2.this) {
-                Iterator<Map.Entry<String, DNSEntry>> it = cache.entrySet().iterator();
-
-                while (it.hasNext()) {
-                    Map.Entry<String, DNSEntry> entry = it.next();
-                    if (entry.getValue().isExpired()) {
-                        it.remove();
-                    }
-                }
+        for (Map.Entry<String, Integer> entry : freqMap.entrySet()) {
+            minHeap.offer(entry);
+            if (minHeap.size() > TOP_K) {
+                minHeap.poll();
             }
-        }, 5, 5, TimeUnit.SECONDS);
+        }
+
+        List<Map.Entry<String, Integer>> result = new ArrayList<>(minHeap);
+        result.sort((a, b) -> b.getValue() - a.getValue());
+
+        List<String> suggestions = new ArrayList<>();
+        for (Map.Entry<String, Integer> entry : result) {
+            suggestions.add(entry.getKey() + " (" + entry.getValue() + ")");
+        }
+
+        return suggestions;
     }
 
-    // Stats tracking
-    private void recordTime(long startTime) {
-        long elapsed = System.nanoTime() - startTime;
-        totalLookupTime += elapsed;
-        requestCount++;
-    }
-
-    public synchronized void getCacheStats() {
-        double hitRate = requestCount == 0 ? 0 : (hits * 100.0 / requestCount);
-        double avgTimeMs = requestCount == 0 ? 0 : (totalLookupTime / 1_000_000.0 / requestCount);
-
-        System.out.println("\nCache Stats:");
-        System.out.println("Hits: " + hits);
-        System.out.println("Misses: " + misses);
-        System.out.println("Hit Rate: " + String.format("%.2f", hitRate) + "%");
-        System.out.println("Avg Lookup Time: " + String.format("%.2f", avgTimeMs) + " ms");
+    // Update frequency (new search)
+    public void updateFrequency(String query) {
+        insert(query);
     }
 
     // Main method
-    public static void main(String[] args) throws InterruptedException {
-        Week1and2 dnsCache = new Week1and2(3);
+    public static void main(String[] args) {
 
-        System.out.println(dnsCache.resolve("google.com", 3));
-        System.out.println(dnsCache.resolve("google.com", 3));
+        Week1and2 system = new Week1and2();
 
-        Thread.sleep(4000); // wait for TTL expiry
+        // Insert sample queries
+        system.insert("java tutorial");
+        system.insert("javascript");
+        system.insert("java download");
+        system.insert("java tutorial");
+        system.insert("java tutorial");
+        system.insert("javascript");
+        system.insert("java 21 features");
 
-        System.out.println(dnsCache.resolve("google.com", 3));
+        // Search
+        System.out.println("Search results for 'jav':");
+        List<String> results = system.search("jav");
 
-        dnsCache.getCacheStats();
+        int rank = 1;
+        for (String res : results) {
+            System.out.println(rank++ + ". " + res);
+        }
+
+        // Update frequency
+        system.updateFrequency("java 21 features");
+        system.updateFrequency("java 21 features");
+
+        System.out.println("\nAfter updating frequency:");
+        results = system.search("jav");
+
+        rank = 1;
+        for (String res : results) {
+            System.out.println(rank++ + ". " + res);
+        }
     }
 }
