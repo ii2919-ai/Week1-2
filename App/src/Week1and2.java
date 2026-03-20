@@ -2,116 +2,159 @@ import java.util.*;
 
 public class Week1and2 {
 
-    // Trie Node
-    static class TrieNode {
-        Map<Character, TrieNode> children = new HashMap<>();
-        Map<String, Integer> frequencyMap = new HashMap<>(); // query → frequency
-    }
+    // Transaction class
+    static class Transaction {
+        int id;
+        int amount;
+        String merchant;
+        long time; // epoch millis
+        String account;
 
-    private TrieNode root = new TrieNode();
+        public Transaction(int id, int amount, String merchant, long time, String account) {
+            this.id = id;
+            this.amount = amount;
+            this.merchant = merchant;
+            this.time = time;
+            this.account = account;
+        }
 
-    // Global frequency map
-    private Map<String, Integer> globalFrequency = new HashMap<>();
-
-    private static final int TOP_K = 10;
-
-    // Insert query into Trie
-    public void insert(String query) {
-        globalFrequency.put(query, globalFrequency.getOrDefault(query, 0) + 1);
-
-        TrieNode node = root;
-        for (char c : query.toCharArray()) {
-            node.children.putIfAbsent(c, new TrieNode());
-            node = node.children.get(c);
-
-            // Update frequency at each prefix node
-            node.frequencyMap.put(query, globalFrequency.get(query));
+        public String toString() {
+            return "id:" + id + " amt:" + amount;
         }
     }
 
-    // Get top K suggestions for prefix
-    public List<String> search(String prefix) {
-        TrieNode node = root;
+    // ------------------ 1. Classic Two-Sum ------------------
+    public static List<String> findTwoSum(List<Transaction> transactions, int target) {
+        Map<Integer, Transaction> map = new HashMap<>();
+        List<String> result = new ArrayList<>();
 
-        for (char c : prefix.toCharArray()) {
-            if (!node.children.containsKey(c)) {
-                // Typo handling: fallback to shorter prefix
-                return fallbackSearch(prefix);
+        for (Transaction t : transactions) {
+            int complement = target - t.amount;
+
+            if (map.containsKey(complement)) {
+                result.add("(" + map.get(complement) + ", " + t + ")");
             }
-            node = node.children.get(c);
+
+            map.put(t.amount, t);
         }
 
-        return getTopK(node.frequencyMap);
+        return result;
     }
 
-    // Fallback for typo tolerance (remove last char)
-    private List<String> fallbackSearch(String prefix) {
-        if (prefix.length() <= 1) return new ArrayList<>();
+    // ------------------ 2. Two-Sum with Time Window ------------------
+    public static List<String> findTwoSumWithTimeWindow(List<Transaction> transactions,
+                                                        int target,
+                                                        long windowMillis) {
+        List<String> result = new ArrayList<>();
 
-        return search(prefix.substring(0, prefix.length() - 1));
-    }
+        for (int i = 0; i < transactions.size(); i++) {
+            Map<Integer, Transaction> map = new HashMap<>();
 
-    // Get top K using Min Heap
-    private List<String> getTopK(Map<String, Integer> freqMap) {
-        PriorityQueue<Map.Entry<String, Integer>> minHeap =
-                new PriorityQueue<>(Map.Entry.comparingByValue());
+            for (int j = i; j < transactions.size(); j++) {
+                Transaction t1 = transactions.get(j);
 
-        for (Map.Entry<String, Integer> entry : freqMap.entrySet()) {
-            minHeap.offer(entry);
-            if (minHeap.size() > TOP_K) {
-                minHeap.poll();
+                if (t1.time - transactions.get(i).time > windowMillis) break;
+
+                int complement = target - t1.amount;
+
+                if (map.containsKey(complement)) {
+                    result.add("(" + map.get(complement) + ", " + t1 + ")");
+                }
+
+                map.put(t1.amount, t1);
             }
         }
 
-        List<Map.Entry<String, Integer>> result = new ArrayList<>(minHeap);
-        result.sort((a, b) -> b.getValue() - a.getValue());
+        return result;
+    }
 
-        List<String> suggestions = new ArrayList<>();
-        for (Map.Entry<String, Integer> entry : result) {
-            suggestions.add(entry.getKey() + " (" + entry.getValue() + ")");
+    // ------------------ 3. K-Sum ------------------
+    public static List<List<Transaction>> findKSum(List<Transaction> transactions,
+                                                   int k,
+                                                   int target) {
+        List<List<Transaction>> result = new ArrayList<>();
+        kSumHelper(transactions, k, target, 0, new ArrayList<>(), result);
+        return result;
+    }
+
+    private static void kSumHelper(List<Transaction> transactions,
+                                   int k,
+                                   int target,
+                                   int start,
+                                   List<Transaction> current,
+                                   List<List<Transaction>> result) {
+
+        if (k == 0 && target == 0) {
+            result.add(new ArrayList<>(current));
+            return;
         }
 
-        return suggestions;
+        if (k == 0 || start >= transactions.size()) return;
+
+        for (int i = start; i < transactions.size(); i++) {
+            current.add(transactions.get(i));
+
+            kSumHelper(transactions,
+                    k - 1,
+                    target - transactions.get(i).amount,
+                    i + 1,
+                    current,
+                    result);
+
+            current.remove(current.size() - 1);
+        }
     }
 
-    // Update frequency (new search)
-    public void updateFrequency(String query) {
-        insert(query);
+    // ------------------ 4. Duplicate Detection ------------------
+    public static List<String> detectDuplicates(List<Transaction> transactions) {
+        Map<String, Set<String>> map = new HashMap<>();
+        List<String> result = new ArrayList<>();
+
+        for (Transaction t : transactions) {
+            String key = t.amount + "-" + t.merchant;
+
+            map.computeIfAbsent(key, k -> new HashSet<>()).add(t.account);
+        }
+
+        for (Map.Entry<String, Set<String>> entry : map.entrySet()) {
+            if (entry.getValue().size() > 1) {
+                result.add("Duplicate: " + entry.getKey() +
+                        " accounts=" + entry.getValue());
+            }
+        }
+
+        return result;
     }
 
-    // Main method
+    // ------------------ Main Method ------------------
     public static void main(String[] args) {
 
-        Week1and2 system = new Week1and2();
+        List<Transaction> transactions = new ArrayList<>();
 
-        // Insert sample queries
-        system.insert("java tutorial");
-        system.insert("javascript");
-        system.insert("java download");
-        system.insert("java tutorial");
-        system.insert("java tutorial");
-        system.insert("javascript");
-        system.insert("java 21 features");
+        long baseTime = System.currentTimeMillis();
 
-        // Search
-        System.out.println("Search results for 'jav':");
-        List<String> results = system.search("jav");
+        transactions.add(new Transaction(1, 500, "StoreA", baseTime, "acc1"));
+        transactions.add(new Transaction(2, 300, "StoreB", baseTime + 1000, "acc2"));
+        transactions.add(new Transaction(3, 200, "StoreC", baseTime + 2000, "acc3"));
+        transactions.add(new Transaction(4, 500, "StoreA", baseTime + 3000, "acc4")); // duplicate
 
-        int rank = 1;
-        for (String res : results) {
-            System.out.println(rank++ + ". " + res);
+        // 1. Classic Two-Sum
+        System.out.println("Two-Sum:");
+        System.out.println(findTwoSum(transactions, 500));
+
+        // 2. Two-Sum with Time Window (2 seconds)
+        System.out.println("\nTwo-Sum with Time Window:");
+        System.out.println(findTwoSumWithTimeWindow(transactions, 500, 2000));
+
+        // 3. K-Sum (k=3)
+        System.out.println("\nK-Sum (k=3):");
+        List<List<Transaction>> ksum = findKSum(transactions, 3, 1000);
+        for (List<Transaction> list : ksum) {
+            System.out.println(list);
         }
 
-        // Update frequency
-        system.updateFrequency("java 21 features");
-        system.updateFrequency("java 21 features");
-
-        System.out.println("\nAfter updating frequency:");
-        results = system.search("jav");
-
-        rank = 1;
-        for (String res : results) {
-            System.out.println(rank++ + ". " + res);
-        }
+        // 4. Duplicate Detection
+        System.out.println("\nDuplicates:");
+        System.out.println(detectDuplicates(transactions));
     }
 }
